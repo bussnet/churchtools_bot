@@ -22,6 +22,9 @@ This Bot is based on [Laravel](http://laravel.com/docs), the best PHP-Framework 
     # define your webroot in system/includes/constants.php in churchtools Dir
     define('TELEGRAMBOTURL', 'http://your-host.de/churchtools_bot');
 
+## Register your Bot on telegram
+
+[Ask the @botfather](https://core.telegram.org/bots#6-botfather)
 
 ## Contributing
 

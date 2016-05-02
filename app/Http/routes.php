@@ -1,15 +1,8 @@
 <?php
 
-/*
-|--------------------------------------------------------------------------
-| Application Routes
-|--------------------------------------------------------------------------
-|
-| Here is where you can register all of the routes for an application.
-| It's a breeze. Simply tell Laravel the URIs it should respond to
-| and give it the controller to call when that URI is requested.
-|
-*/
+// Token for Telegram Webhook, so not erveryone can post Updates
+$auth_token = 'eda1efc2daf44a12fbe7ddaa2a28a0283643a9db72e3bc33c8c6b45b161a9eac';
+
 
 Route::any('/', function (\Illuminate\Http\Request $request) {
     Log::debug("/ with".print_r($request->all(), true)." from ". $request->ip());
@@ -53,7 +46,8 @@ function pairCT($chat_id, $p) {
             'directtool' => 'telegrambot',
             'id' => $p['user'],
             'token' => $p['token'],
-        ]
+        ],
+        'allow_redirects' => ['strict' => true] // user POST if redirect to https
     ]);
 
     $resp_body = $result->getBody()->getContents();
@@ -70,13 +64,41 @@ function pairCT($chat_id, $p) {
         'form_params' => [
             'func' => 'setTelegramChatId',
             'chatId' => $chat_id
-        ]
+        ],
+        'allow_redirects' => ['strict' => true] // user POST if redirect to https
     ]);
     $resp_body = $result->getBody()->getContents();
     Log::debug('result of setting the telegramId for '.$p['email'].': '. $resp_body);
     $json = json_decode($resp_body, true);
     if ($json['status'] != 'success')
         throw new Exception('could not set telegramId');
+}
+
+/**
+ * @param \Telegram\Bot\Objects\Update[] $updates
+ * @return int last_update _id
+ */
+function processUpdates($updates) {
+    Log::debug('Updates '. print_r($updates, true));
+    foreach ($updates as $k => $update) {
+        Log::debug('receive Update '. print_r($k, true).'=>'.print_r($update, true));
+        /** @var \Telegram\Bot\Objects\Message $msg */
+        $msg = $update->getMessage();
+        $chat = $msg->getChat();
+        $txt = $msg->getText();
+        Log::debug('receive msg "' . $txt . '" from ' . $chat->getUsername());
+        // check authcode
+        if (strlen($txt) == 6) {
+            $file = 'auth_tokens/' . $txt;
+            if (Storage::disk()->exists($file)) {
+                Log::debug('found token ' . $txt);
+                pairCT($msg->getChat()->getId(), json_decode(Storage::disk()->get($file), true));
+                @Storage::disk()->delete($file);
+            }
+        }
+        $last_update = $update->getUpdateId();
+    }
+    return $last_update;
 }
 
 Route::any('/message/{chat_id}', function ($chat_id, \Illuminate\Http\Request $request) {
@@ -113,84 +135,37 @@ Route::any('/message/{chat_id}', function ($chat_id, \Illuminate\Http\Request $r
     return response()->json($response);
 });
 
+Route::any('/webhook/{token}', function($token) use ($auth_token) {
 
-Route::any('/pull', function (\Illuminate\Http\Request $request) {
-    Telegram::removeWebhook();
-    $last_update = 644255974;
-    /**
-     * @var \Telegram\Bot\Objects\Update[] $updates
-     */
-    $updates = Telegram::getUpdates([
-        'offset' => $last_update + 1
-    ]);
+    if ($token == 'enable') {
+        // Don't forget to setup a POST route in your Laravel Project.
+        $url = url('webhook', ['token' => $auth_token], true);
+        $response = Telegram::setWebhook(['url' => $url]);
+        Log::debug('enable Webhook to '.$url.': '.print_r($response,true));
+        return 'OK';
+    } elseif($token == 'pull') {
+        Telegram::removeWebhook();
+        $last_update_file = 'storage/last_update_id';
+        $last_update = intval(@Storage::disk()->get($last_update_file) ?: 0);
+        /**
+         * @var \Telegram\Bot\Objects\Update[] $updates
+         */
+        $updates = Telegram::getUpdates([
+            'offset' => $last_update + 1
+        ]);
 
-    foreach ($updates as $k => $update) {
-        /** @var \Telegram\Bot\Objects\Message $msg */
-        $msg = $update->getMessage();
-        $chat = $msg->getChat();
-        $txt = $msg->getText();
-        Log::debug('receive msg "'.$txt.'" from '.$chat->getUsername());
-        // check authcode
-        if (strlen($txt) == 6) {
-            $file = 'auth_tokens/' . $txt;
-            if (Storage::disk()->exists($file)) {
-                Log::debug('found token '.$txt);
-                try {
-                    pairCT($msg->getChat()->getId(), json_decode(Storage::disk()->get($file), true));
-                    @Storage::disk()->delete($file);
-                } catch (\Exception $e) {
-                    return response()->json([
-                        'status' => 'failed',
-                        'error' => true,
-                        'message' => $e->getMessage()
-                    ]);
-                }
-            }
-        }
-
+        $last_update = processUpdates($updates);
+        Storage::disk()->put('storage/last_update_id', $last_update);
+    } elseif($token == 'disable') {
+        // Don't forget to setup a POST route in your Laravel Project.
+        $response = Telegram::removeWebhook();
+        Log::debug('disable Webhook: ' . print_r($response, true));
+        return 'OK';
+    } elseif ($token == $auth_token) {
+        // Put this inside either the POST route '/<token>/webhook' closure (see below) or
+        $update = Telegram::getWebhookUpdates();
+        Log::debug('receive Updates');
+        processUpdates([$update]);
+        return 'OK';
     }
-//    Telegram::setWebhook();
-
-
-    return response()->json([
-        'status' => 'success'
-    ]);
 });
-
-
-
-
-/*
-Pairing
-    $d = file_get_contents_curl_post(TELEGRAMBOTURL . "/add/$str?email=$user->email&host=" . $_SERVER["SERVER_NAME"] . "&id=$user->id&token=$token");
-
-sendMessage
-  $result = file_get_contents_curl_post("http://churchtools.de:8882/message/$p->telegramid?id=".$userId, $result);
-
-  $data = json_decode($result);
-
-
-  if ($data == null) {
-    ct_log("Keine Info vom Telegram Bot erhalten.", 1);
-  }
-  if ($data->status!="success") {
-    ct_log("Fehler vom TelegramBot erhalten: $result", 1);
-  }
-  db_query('INSERT INTO {cc_mail_queue} (receiver, sender, subject, body, htmlmail_yn, priority,
-               modified_date, modified_pid, send_date, error, reading_count)
-            VALUES (:receiver, :sender, :subject, :body, :htmlmail_yn, :priority,
-               :modified_date, :modified_pid, :send_date, :error, :reading_count)',
-      array(":receiver" => "$p->vorname $p->name",
-          ":sender" => "Admin-Mail",
-          ":subject" => "<i>Telegram: </i>" . shorten_string($message, 30),
-          ":body" => $message,
-          ":htmlmail_yn" => 0,
-          ":priority" => 1,
-          ":modified_date" => current_date(),
-          ":modified_pid" => $user->id,
-          ":send_date" => current_date(),
-          ":error" => $data->status!="success",
-          ":reading_count" => 0,
-      ));
-
- */
